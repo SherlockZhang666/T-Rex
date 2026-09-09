@@ -219,11 +219,12 @@ deform PNG 存 0-255 uint8，`_open_gray`（`train.py:275`）会除以 255。
 
 | 文件 | 作用 |
 | --- | --- |
-| `utils/gen_json_openarm_sharpa_left.py` | 转换器主体。session 目录 → 训练 JSON + `_statistics.json` + 图片树 |
+| `utils/gen_json_openarm_sharpa_left.py` | 转换器主体。session 目录 → 训练 JSON + `_statistics.json` + `_provenance.json` + 图片树 |
 | `utils/gen_json_openarm_sharpa_left.sbatch` | 转换作业（CPU） |
 | `tools/verify_openarm_json.py` | 转换后的断言检查 |
 | `tools/verify_openarm_json.sbatch` | 验证作业 |
-| `scripts/train_openarm.sh` | 训练启动脚本（从 `train.sh` 派生，改掉残留的 NVIDIA 集群路径） |
+| `tools/check_ckpt_action_dims.py` | 直接读 checkpoint 的张量形状，回答"这个 `--action_dim` 会不会被静默丢弃权重" |
+| `scripts/train_openarm.sbatch` | 训练启动脚本（从 `train.sh` 派生，改掉残留的 NVIDIA 集群路径）；`SMOKE=1` 切 1 卡 1 epoch |
 
 `qwen_vla/` 不动。`scripts/train.py` 不动。
 
@@ -246,8 +247,49 @@ deform PNG 存 0-255 uint8，`_open_gray`（`train.py:275`）会除以 255。
 8. **FLARE 连续性**：随机抽样本，确认 `image{idx + k*stride}_head.png` 都存在
 9. 再跑一遍已有的 `tools/check_our_deform.py`，确认转换后的 deform 仍落在 T-Rex 分布内
 
-然后 1 卡 `--n_epochs 1` 冒烟。**唯一必须盯的一行是 resume 时打印的
-`Skipped 0 keys with shape mismatch`** —— 只要非 0，2.1 的 padding 方案就是错的。
+padding 方案的决定性检查不需要跑训练：`tools/check_ckpt_action_dims.py` 直接读
+checkpoint 里那几个和 `action_dim` 绑定的张量形状，得出的正是 resume 时那行
+`Skipped N keys with shape mismatch` 会打印的 N。
+
+---
+
+## 4b. 实测结果（2026-09-09）
+
+**转换**（job 45738863）：38/38 episodes，**13831 个样本**。15792 原始帧里剔掉了
+非 engaged 的部分；每条 episode 只取最长的一段连续 engaged 区间。
+
+**数据集验证**（job 45739396，抽查 6 条 episode）：**80/80 全过**。其中值得记录的：
+
+| 检查 | 结果 |
+| --- | --- |
+| delta-base chunk[0] 重建绝对目标位姿 | 位置误差 max **0.0000 mm**；旋转 max 0.019° |
+| EEF 外推 | 位移 **54.50 mm**、绕指轴 **144.1750°** |
+| hand action 22 维直通 | max \|diff\| = **0.00e+00 rad**（确认关节序无需置换） |
+| 手指重排 + 去偏置 | max \|diff\| = 4e-8；且"不重排的话会差 13.14"，证明重排确实生效 |
+| 去偏置后 thumb / pinky \|F\| | 5th pct **0.011 N / 0.0005 N**（未校正时分别站在 2.2–3.5 N / ~1.7 N） |
+| 重算 bias vs 归档 `magnitude_N` | max \|diff\| = 0.045 N |
+| deform 去底噪后众数像素 | **0**（对齐 T-Rex 的背景） |
+| 统计量 | 右半 span **恰好 0**；左半 496/496 维非退化 |
+| `train.py` 两个正则 | 全部匹配；38 个 episode 目录内帧号均为 0..n−1 连续 |
+
+那个 0.019° 的旋转残差是算术噪声，不是失配：`arccos` 在单位阵附近病态，
+cos θ ≈ 1 − θ²/2，action chunk 存的是 float32（ε ~ 5e-8），
+θ ≈ √(2ε) ≈ 3e-4 rad = 0.017°，正好是这个量级。已在
+`tools/verify_openarm_json.py:rot_angle_deg` 的 docstring 里注明。
+
+**checkpoint 维度**（job 45739549）：
+
+```
+--action_dim 62 : All 5 action-dim-tied parameters match.  (rc=0)
+--action_dim 31 : 5 parameter(s) WOULD BE SKIPPED.         (rc=5)
+                  x_embedder.mlp.fc1.weight          (2048, 62)
+                  final_layer.mlp.fc2.{weight,bias}  (62, 2048) / (62,)
+                  final_layer_tactile.mlp.fc2.{weight,bias}
+tacf6_vqvae_{min,max,mask} : 60 (want 60)
+```
+
+即 2.1 的判断被 checkpoint 本身证实：改成 31 会丢掉 midtrain 的整个 action head
+和 tactile head 末层，而日志只有一行提示。
 
 ---
 
