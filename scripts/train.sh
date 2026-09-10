@@ -13,14 +13,14 @@ export PYTHONPATH=${PROJECT_ROOT}:$PYTHONPATH
 export WANDB_MODE=offline
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-ORIGIN_MODEL_PATH="/mnt/amlfs-02/shared/human_egocentric/dniu/Dex-MoT/mot_arch/ckpts/Qwen3-VL-2B-Instruct"
+ORIGIN_MODEL_PATH="/n/netscratch/ydu_lab/Lab/hangxing/code/Tactile/ckpt/Qwen3-VL-2B-Instruct"
 DEFORM_ENCODER_PATH="/mnt/amlfs-02/shared/human_egocentric/dniu/Dex-MoT/mot_arch/ckpts/dex_mot_qwen/deform/sharpa_wave_deform_encoder.pth"
 # Tactile codes are encoded ON THE FLY by the embedded VQ-VAE — no pre-baked
 # codes needed.  If RESUME_CHECKPOINT was merged with an embedded VQ-VAE the
 # trainer auto-detects it (VQVAE_CKPT then optional); otherwise it builds the
 # module from VQVAE_CKPT.
 VQVAE_CKPT="/mnt/amlfs-02/shared/human_egocentric/dniu/Dex-MoT/mot_arch/ckpts/dex_mot_qwen/vqvae/vqvae_f6_w16_k64_finger/latest.pt"
-RESUME_CHECKPOINT="/mnt/amlfs-02/shared/human_egocentric/dniu/Dex-MoT/mot_arch/ckpts/dex_mot_expert/exp/qwen3vl_midtrain_flare/checkpoint-5-19464"
+RESUME_CHECKPOINT="/n/netscratch/ydu_lab/Lab/hangxing/code/Tactile/ckpt/T-Rex_midtrain_mecka23k_ucb100_vqvae_epoch6"
 RESUME_SOURCE="midtrain"
 OUTPUT_DIR="/mnt/amlfs-02/shared/human_egocentric/dniu/Dex-MoT/mot_arch/ckpts/dex_mot_expert/exp"
 

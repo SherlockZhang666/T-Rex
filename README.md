@@ -148,7 +148,7 @@ T-Rex/
 conda create -n trex python=3.10 -y
 conda activate trex
 # torch first, from the CUDA-12.4 index:
-pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+pip install torch==2.6.0 torchvision==0.21.0 --extra-index-url https://download.pytorch.org/whl/cu124
 # everything else (pinned in pyproject.toml; transformers>=4.57 for Qwen3-VL):
 pip install -e .
 # optional — only if you train/convert with the LeRobot v3.0 data path:
