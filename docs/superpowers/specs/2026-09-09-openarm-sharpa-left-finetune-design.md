@@ -291,6 +291,63 @@ tacf6_vqvae_{min,max,mask} : 60 (want 60)
 即 2.1 的判断被 checkpoint 本身证实：改成 31 会丢掉 midtrain 的整个 action head
 和 tactile head 末层，而日志只有一行提示。
 
+**冒烟训练**（job 45758182，4×A100，1 epoch，35 min）：`COMPLETED`。
+
+```
+Resumed: missing=0, unexpected=0        <- 且没有任何 "Skipped ... shape mismatch" 行
+Model: 4251.4M total, 3840.3M trainable
+Tactile expert weights kept from resumed midtrain checkpoint.
+[Qwen3VLVLAModel] embedded VQ-VAE loaded (codebook=64, granularity=finger, window=16)
+VQ-VAE F6 history index: 38 episodes, window=16      <- 2.3 的正则对 38 条全部生效
+Dataset size: 13831
+Flare alignment: 8 steps x 4 tok/frame = 32 total tokens
+```
+
+loss 轨迹（1729 步，warmup 在 step 51 结束、LR 准确打到 1e-4）：
+
+| step | lr | act | tac | fut |
+| --- | --- | --- | --- | --- |
+| 0 | 2.0e-6 | 1.131 | 1.473 | 0.0133 |
+| 50 | 1.0e-4 | 0.116 | 0.257 | 0.0108 |
+| 200 | 9.8e-5 | 0.045 | 0.116 | 0.0087 |
+| 900 | 4.9e-5 | 0.012 | 0.043 | 0.0068 |
+| 1728 | 0 | 0.0077 | 0.075 | 0.0058 |
+
+---
+
+## 4c. 途中修掉的三个环境/配置问题
+
+| 症状 | 根因 | 处理 |
+| --- | --- | --- |
+| `FileNotFoundError: /usr/local/cuda/bin/nvcc`，31 秒即退 | DeepSpeed 在 `import` 期间 shell 出去跑 `$CUDA_HOME/bin/nvcc` 探版本（`op_builder/builder.py:53`）；节点上 `CUDA_HOME` 未设且无 `/usr/local/cuda` | 显式 `export CUDA_HOME=.../cuda/12.4.1-fasrc01/cuda`（配 torch 2.6.0+cu124）。不用 `module load`：探测只需要 nvcc 存在，而 module 会把它的 lib64 塞进 `LD_LIBRARY_PATH`，遮住 torch 自带的 cu124 库 |
+| AdamW 惰性初始化 `exp_avg_sq` 时 OOM，`Tried to allocate 14.31 GiB` | 我把 SMOKE 设成 `NUM_PROCESSES=1`，等于关掉 ZeRO-2 唯一的省显存机制。模型不是 2B —— MoT 把 LM 层复制成三份专家，**4.25 B 总参 / 3.84 B 可训练**，AdamW 每参数 12 字节 = **~43 GB 优化器状态**，单卡任何 batch size 都装不下 | 脚本改成始终用全部可见 GPU，并在 `< 2` 时直接报错退出。`14.31 GiB / 4 B = 3.84 B` 与 `Model:` 那行完全吻合 |
+| `--save_freq 500` 只在最后存了一个 checkpoint | `--save_freq` 单位是 **epoch** 不是 step（`train.py:1222`） | 改为 5 |
+
+`--warmup_rates` 从 `train.sh` 的 0 改成 0.03：resume 一个 midtrain checkpoint 时，
+step 0 会用满 LR 配一组全空的 AdamW 矩估计走一步。
+
+---
+
+## 5b. 正式训练配置的最终取值（基于实测）
+
+单 epoch 32 min（4×A100，bsz 2）。`train.sh` 的 100 epochs 在这里是 **~53 小时**。
+
+冒烟结果说明不值得：**一个退火完的 epoch 已经把 action loss 从 1.131 打到 0.0077**，
+数据是单任务 38 条示范、且从 midtrain checkpoint 起步。`train.sh` 的 100 是给大得多
+的 post-train 语料定的。
+
+最终：
+
+| 参数 | 值 | 理由 |
+| --- | --- | --- |
+| `N_EPOCHS` | **30** | ~16 h，`-t 1-00:00:00` 有余量；`save_freq 5` 留下 6 个 checkpoint |
+| `TRAIN_BSZ` | **2** | 冒烟实测能装下。ZeRO-2 每 rank 静态占 ~22 GB（bf16 权重 8.5 复制 + 优化器 43/4 + 梯度分片） |
+| `GLOBAL_BATCH` | 128（accum 16） | 与 `train.sh` 的 16×8 一致，从而 LR 可以留在参考的 1e-4 |
+| `LR` / `WARMUP` | 1e-4 / 0.03 | 见上 |
+
+**哪个 checkpoint 最好是 rollout 问题，不是 loss 问题。** 这么小的数据上训练 loss 会在
+策略早已停止改进之后继续下降，而 3 节里那个按样本切的 val 无法裁决。
+
 ---
 
 ## 5. 训练配置
