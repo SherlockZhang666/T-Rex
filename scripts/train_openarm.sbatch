@@ -63,27 +63,46 @@ RUN_NAME="${EXPERIMENT_NAME}_$(date +%m%d_%H%M)"
 # midtrain checkpoint while the log still looks clean.
 ACTION_DIM=62
 
+# NOTE --save_freq is counted in EPOCHS, not steps (train.py:1222), and the last
+# epoch always saves regardless. A large value therefore means "only the final
+# checkpoint", which is the opposite of what the name suggests.
+#
+# NOTE --val_ratio splits by SAMPLE, not by episode (train.py:238-243). At 30 Hz
+# a held-out frame's neighbours are in the training set, so this val loss is
+# leaked and will track the training loss no matter how hard the model overfits.
+# Read it as "is it fitting at all", never as a generalisation signal. Getting a
+# real one needs an episode-level split, which the JSON path does not have.
 if [ "$SMOKE" = "1" ]; then
     NUM_PROCESSES=1
     N_EPOCHS=1
-    SAVE_FREQ=1000000          # effectively never
+    SAVE_FREQ=1000000          # last epoch still saves; nothing else does
     TRAIN_BSZ=2
+    GRAD_ACCUM=1
     VAL_ARGS="--val_ratio 0 --val_freq 0"
 else
     NUM_PROCESSES=$(nvidia-smi -L 2>/dev/null | wc -l)
     NUM_PROCESSES=${NUM_PROCESSES:-1}
-    N_EPOCHS=${N_EPOCHS:-40}
-    SAVE_FREQ=${SAVE_FREQ:-500}
+    N_EPOCHS=${N_EPOCHS:-100}
+    SAVE_FREQ=${SAVE_FREQ:-5}          # epochs
+    # 8 x 4 GPUs x 4 accum = 128 global, which is exactly the effective batch
+    # scripts/train.sh post-trains at (16 x 8). Matching it lets --learning_rate
+    # stay at the reference 1e-4 instead of being a second thing we changed.
     TRAIN_BSZ=${TRAIN_BSZ:-8}
+    GRAD_ACCUM=${GRAD_ACCUM:-4}
     VAL_ARGS="--val_ratio 0.05 --val_freq 200 --max_val_batches 30"
 fi
-LR=${LR:-5e-5}
+LR=${LR:-1e-4}
+# train.sh ships 0. Resuming a midtrain checkpoint means step 0 takes a full-LR
+# AdamW step with empty moment estimates, which is the cheapest way to damage
+# weights that took six epochs of midtraining to get.
+WARMUP=${WARMUP:-0.03}
 
 mkdir -p "$OUTPUT_DIR" "$R/logs"
 cd "${PROJECT_ROOT}/scripts" || exit 1
 
 echo "=== job ${SLURM_JOB_ID:-local} on $(hostname) ==="
-echo "SMOKE=$SMOKE  procs=$NUM_PROCESSES  epochs=$N_EPOCHS  bsz=$TRAIN_BSZ  lr=$LR"
+echo "SMOKE=$SMOKE  procs=$NUM_PROCESSES  epochs=$N_EPOCHS  bsz=$TRAIN_BSZ x accum=$GRAD_ACCUM"
+echo "global batch = $((TRAIN_BSZ * NUM_PROCESSES * GRAD_ACCUM))  lr=$LR  warmup=$WARMUP  save every $SAVE_FREQ epoch(s)"
 echo "data:   $DATA_JSON"
 echo "resume: $RESUME_CHECKPOINT"
 nvidia-smi -L
@@ -110,8 +129,9 @@ accelerate launch \
     --train_bsz_per_gpu ${TRAIN_BSZ} \
     --learning_rate ${LR} \
     --min_lr_ratio 0 \
+    --warmup_rates ${WARMUP} \
     --weight_decay 0 \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps ${GRAD_ACCUM} \
     --output_dir ${OUTPUT_DIR} \
     --log_dir ${OUTPUT_DIR} \
     --experiment_name ${EXPERIMENT_NAME} \
