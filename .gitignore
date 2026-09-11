@@ -37,3 +37,6 @@ scripts/test_output*/
 tactile_vqvae/logs/
 tactile_vqvae/plots*/
 training_data/
+
+# Downloaded Hub checkpoints (8.5 GB each)
+checkpoints/

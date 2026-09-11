@@ -230,11 +230,17 @@ def model_load(args):
         )
 
     ckpt_file = os.path.join(ckpt, "model.pt")
-    sd = torch.load(ckpt_file, map_location="cpu")
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    print(f"Checkpoint loaded: missing={len(missing)}, unexpected={len(unexpected)}")
-    if missing:
-        print(f"  missing (first 10): {missing[:10]}")
+    if getattr(args, "random_weights", 0):
+        # Latency probe only (hardware_code/openarm/serve.py --random_weights 1): the
+        # graph is built from config.json and never sees model.pt. Timing is real,
+        # outputs are noise. Never on a robot.
+        print("!!! --random_weights: model.pt NOT loaded; outputs are garbage, timing only")
+    else:
+        sd = torch.load(ckpt_file, map_location="cpu")
+        missing, unexpected = model.load_state_dict(sd, strict=False)
+        print(f"Checkpoint loaded: missing={len(missing)}, unexpected={len(unexpected)}")
+        if missing:
+            print(f"  missing (first 10): {missing[:10]}")
     model = model.to(torch.bfloat16)
 
     # The embedded VQ-VAE must encode in the precision the policy was TRAINED on,
