@@ -266,6 +266,18 @@ horizon = 16（`action_chunk`），loop 的约束 `chunk_steps + infer_lead ≤ 
 
 ---
 
+## 5b. 时延实测（2026-09-11，`checkpoint-19-32860`，RTX 5090 Laptop，平台功耗上限 ~95 W）
+
+| server | 往返 p50 / p95 | slow / fast | 放得下 233 ms？ |
+|---|---|---|---|
+| 训练参考 `10/6` | 320 / 333 ms | 240 / 72 | 否，任何 lead 都不行 |
+| `--cascaded_total_steps 5 --cascaded_split_step 3` | 213 / 224 ms | 164 / 43 | 是，余 9 ms |
+
+每步 Euler 约 27 ms（两张腕图槽 + chunk ≈ 230 token 过 28 层 MoT，batch 1，launch-bound），
+prefill ~40 ms，ViT ~24 ms。§5 里"动作步长 2"的备选是错的：上限是 horizon 的一半（wall time），
+步长不改变它。可行的两条：`5/3` @ 30 Hz（τ_split 仍是训练的 0.4，触觉专家只在 τ ≤ 0.4 训过，
+比例不能变）；或 `10/6` @ 15 Hz 慢动作。真机上两种都要试。
+
 ## 9. 已知未决
 
 - **下载**：HF CDN 到本机实测 ~150 KB/s，两个 8.5 GB 要十几个小时。若集群侧有副本，
