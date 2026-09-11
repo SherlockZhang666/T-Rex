@@ -127,15 +127,38 @@ sudo collect/sharpa_tap.py --serve /tmp/sharpa_tap.sock      # AF_PACKET copy of
 
 `horizon = 16` and `loop.py` requires `infer_lead < chunk_steps` and
 `infer_lead + chunk_steps ≤ 16`, so the largest lead is **7 steps = 233 ms** at 30 Hz, and
-the whole `slow_and_fast` pass plus transport has to fit in it. Measure with
-`ping_trex.py` (works with `--random_weights 1` before the weights are downloaded).
+the whole `slow_and_fast` pass plus transport has to fit in it. That ceiling is
+*horizon/2 in wall time*: the observation-to-execution delay plus the executed span must
+fit in the 533 ms the chunk covers, and the span cannot be shorter than the next
+inference. No action stride or re-indexing trick moves it. Measure with `ping_trex.py`
+(works with `--random_weights 1` before the weights are downloaded).
 
-If it does not fit, in order of preference:
+Measured 2026-09-11, `checkpoint-19-32860`, RTX 5090 Laptop (power-capped at ~95 W by
+the platform, 2.1 GHz under load), round trip from `ping_trex.py`:
 
-1. lower `--cascaded_total_steps` (and `--cascaded_split_step` proportionally) on the server;
-2. add an action stride to the loop: execute `actions[0, 2, 4, …]` at 15 Hz. Exact for
-   absolute targets (action 2k is the target 2k/30 s after the observation) and doubles the
-   budget. Not implemented; do it only if 1 is not enough.
+| server flags | p50 | p95 | slow / fast | fits 233 ms |
+|---|---|---|---|---|
+| default `10/6` (training reference) | 320 ms | 333 ms | 240 / 72 | no |
+| `--cascaded_total_steps 5 --cascaded_split_step 3` | 213 ms | 224 ms | 164 / 43 | yes, 9 ms spare |
+
+One Euler step of the action expert is ~27 ms (about 230 tokens -- the two wrist-image
+slots plus the chunk -- through 28 MoT layers, batch 1, launch-bound), prefill ~40 ms,
+ViT ~24 ms. The fast image processor (`--fast_processor 1`, default) is bit-identical and
+saves CPU time but not wall time; it is kept because it is free.
+
+Two ways to run, both to be judged on the robot:
+
+1. **`5/3` at 30 Hz.** Same `τ_split = 0.4` as training (the tactile expert was trained
+   only on τ ≤ 0.4, so the split *fraction* must stay 0.6 -- `4/2` or `6/4` would hand it
+   a τ it never saw), but the action expert integrates the coarse phase in 3 Euler steps
+   instead of 6. Real-time; a deviation in integration accuracy whose effect only the
+   rollout can show.
+2. **`10/6` at 15 Hz** (`cli.py --fps 15`). The reference schedule, executed in slow
+   motion: every action is held for 66 ms instead of 33, so the arm moves at half the
+   demonstrated speed and the budget doubles to 467 ms. Exact in space, wrong in time.
+
+If the laptop's power mode can be raised (the cap is the platform's, not a thermal
+throttle), re-measure first: `10/6` needs ~30 % off to fit.
 
 ## What is not done
 

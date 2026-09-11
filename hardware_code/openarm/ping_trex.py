@@ -145,6 +145,7 @@ def main(argv=None) -> int:
 
     rng = np.random.default_rng(0)
     latencies, server_ms, problems = [], [], []
+    slow_ms, fast_ms = [], []
     hand_steps, wrist_off = [], []
     for i in range(a.n):
         payload = synthetic_payload(rng, prompt, a.window)
@@ -152,6 +153,8 @@ def main(argv=None) -> int:
         out = client.infer(payload)
         latencies.append(time.monotonic() - t0)
         server_ms.append(float(out["server_timing"]["infer_ms"]))
+        slow_ms.append(float(out["server_timing"].get("slow_ms", float("nan"))))
+        fast_ms.append(float(out["server_timing"].get("fast_ms", float("nan"))))
         chunk = np.asarray(out["actions"], dtype=np.float64)
         problems.extend(f"call {i}: {m}" for m in check_chunk(chunk, horizon, action_dim, bounds))
         if chunk.shape == (horizon, action_dim):
@@ -170,7 +173,9 @@ def main(argv=None) -> int:
     print(f"steady   p50       {p50 * 1e3:7.0f} ms   round trip, over {len(steady)} calls")
     print(f"         p95       {p95 * 1e3:7.0f} ms")
     print(f"         max       {steady[-1] * 1e3:7.0f} ms")
-    print(f"server   p50       {statistics.median(server_ms):7.0f} ms   slow_and_fast only")
+    print(f"server   p50       {statistics.median(server_ms):7.0f} ms   slow_and_fast only "
+          f"(slow {statistics.median(slow_ms):.0f} ms: images + prefill + {meta.get('cascaded_steps', ['?', '?'])[1]} "
+          f"flow steps; fast {statistics.median(fast_ms):.0f} ms: tactile expert, the rest)")
     print(f"budget at --infer-lead {a.infer_lead} @ {a.fps:g} Hz: {budget * 1e3:.0f} ms")
     if wrist_off:
         w = np.concatenate(wrist_off)
@@ -191,9 +196,10 @@ def main(argv=None) -> int:
         if need > max_lead:
             print(f"\nlatency does not fit ANY lead: p95 needs --infer-lead {need}, and with a "
                   f"{HORIZON_MAX}-step horizon the largest legal lead is {max_lead} "
-                  f"(lead < chunk_steps, lead + chunk_steps <= {HORIZON_MAX}). Options: lower "
-                  f"--cascaded_total_steps on the server, or an action stride in the loop "
-                  f"(see hardware_code/openarm/README.md, 'Latency').")
+                  f"(lead < chunk_steps, lead + chunk_steps <= {HORIZON_MAX}). Options: serve "
+                  f"with --cascaded_total_steps 5 --cascaded_split_step 3 (same tau_split as "
+                  f"training), or run the client at --fps 15 (slow motion). See "
+                  f"hardware_code/openarm/README.md, 'Latency'.")
         else:
             print(f"\nlatency does not fit the budget. Use --infer-lead {need} "
                   f"--chunk-steps {HORIZON_MAX - need}.")

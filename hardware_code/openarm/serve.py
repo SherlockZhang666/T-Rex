@@ -36,7 +36,7 @@ RESPONSE
                     the chunk-start hand_wrist frame, [9:31] left hand absolute radians,
                     [31:62] padding -- discard.
     chunk_id        int
-    server_timing   {"infer_ms": float}
+    server_timing   {"infer_ms": float, "slow_ms": float, "fast_ms": float}
 
 `--random_weights` builds the network from config.json without model.pt. The outputs are
 garbage; the timing is real. It exists so --infer-lead can be sized before 8.5 GB finishes
@@ -97,6 +97,10 @@ def parse_args(argv=None):
                    help="advertised in the server metadata; the client still sends its own")
     p.add_argument("--random_weights", type=int, default=0,
                    help="1: do not load model.pt (latency probe only, outputs are garbage)")
+    p.add_argument("--fast_processor", type=int, default=1,
+                   help="1: Qwen2VLImageProcessorFast (torch) instead of the PIL one. Same "
+                        "pixel_values to 6e-8 on this checkpoint's 384x288 inputs, 3-4x "
+                        "faster on the CPU side. 0 restores test.py's default.")
     # Everything below mirrors scripts/test.py's parser so model_load / CascadedServer see
     # the Namespace they expect. Defaults are THIS checkpoint family's, not test.py's
     # (which defaults to action_dim 31 / chunk 8 and would build the wrong head).
@@ -167,6 +171,13 @@ class TrexPolicy:
         self.args = args
         self.trex = trex_test
         model, processor, statistic = trex_test.model_load(args)
+        if getattr(args, "fast_processor", 1):
+            from transformers import AutoProcessor
+
+            processor = AutoProcessor.from_pretrained(
+                os.path.join(args.checkpoint_path, "processor"), trust_remote_code=True,
+                use_fast=True)
+            logger.info("image processor: %s", type(processor.image_processor).__name__)
         self.server = trex_test.CascadedServer(args, model, processor, statistic)
         self.device = self.server.device
         self.server.model = self.server.model.to(self.device).eval()
@@ -227,15 +238,20 @@ class TrexPolicy:
             # One wrist camera on this rig, two fast slots in the model: training wrote the
             # same left-wrist frame into both (gen_json_openarm_sharpa_left.py, image_old_fast).
             srv._run_slow(prompt, [head], [wrist, wrist], f6, deform, state)
+            torch.cuda.synchronize()
+            t_slow = time.monotonic()
             actions, chunk_id = srv._run_fast(f6, deform)
-        infer_ms = (time.monotonic() - t0) * 1e3
+            torch.cuda.synchronize()
+        t1 = time.monotonic()
+        infer_ms = (t1 - t0) * 1e3
+        slow_ms, fast_ms = (t_slow - t0) * 1e3, (t1 - t_slow) * 1e3
         chunk = np.asarray(actions, dtype=np.float32)
         if chunk.shape != (self.horizon, self.action_dim):
             raise RuntimeError(f"model returned {chunk.shape}, expected "
                                f"({self.horizon}, {self.action_dim})")
         self.n_infer += 1
         return {"actions": chunk, "chunk_id": int(chunk_id),
-                "server_timing": {"infer_ms": infer_ms}}
+                "server_timing": {"infer_ms": infer_ms, "slow_ms": slow_ms, "fast_ms": fast_ms}}
 
     def warm_up(self) -> float:
         rng = np.random.default_rng(0)

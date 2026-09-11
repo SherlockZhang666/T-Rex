@@ -65,8 +65,13 @@ checkpoint 要五样东西齐：`config.json  model.pt(8.5 GB)  processor/  stat
 ```bash
 # 终端 1
 cd $TREX
-scripts/serve_openarm.sh $CKPT
+scripts/serve_openarm.sh $CKPT --cascaded_total_steps 5 --cascaded_split_step 3
 ```
+
+`5/3` 不是训练时的 `10/6`：本机实测 `10/6` 一次推理 320 ms，超过 16 步 horizon 允许的
+233 ms 上限，任何 `--infer-lead` 都放不下；`5/3` 保持同样的 τ_split = 0.4（触觉专家只在
+τ ≤ 0.4 训过，比例不能变），实测 213 ms。想跑训练原版 `10/6`，就不加这两个参数、客户端
+改 `--fps 15` 慢动作跑（臂速减半）。两种都要在真机上比，见 `README.md` 的 Latency 一节。
 
 **判据**：日志里要有这几行——
 
@@ -91,10 +96,11 @@ cd $TREX
 ```
 
 **判据**：`OK -- p95 fits in 233 ms`，chunk `(16, 62)`，没有 `CHUNK PROBLEMS`。它最后一行直接给出
-该传给 `cli.py` 的 `--infer-lead N --chunk-steps M`，**记下来**。
+该传给 `cli.py` 的 `--infer-lead N --chunk-steps M`，**记下来**。本机 `5/3` 实测
+p50 213 / p95 224 ms，只有 9 ms 余量——GPU 上别开别的东西。
 
 超预算的话它会说明是"换个 lead 能放下"还是"任何 lead 都放不下"；后者按 `README.md` 的
-Latency 一节处理（先降 `--cascaded_total_steps`），不要硬跑——loop 会在每个 chunk 边界卡住。
+Latency 一节处理，不要硬跑——loop 会在每个 chunk 边界卡住。
 
 > 权重还没下完也能先测时延：`scripts/serve_openarm.sh $CKPT --random_weights 1`。
 > 输出是垃圾，时间是真的；客户端看到 `random_weights` 会拒绝 `--enable-*`。
