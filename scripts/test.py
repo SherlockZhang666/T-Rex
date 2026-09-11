@@ -237,13 +237,29 @@ def model_load(args):
         print(f"  missing (first 10): {missing[:10]}")
     model = model.to(torch.bfloat16)
 
-    # Keep the embedded VQ-VAE + its F6 stats in fp32 so on-the-fly codes match
-    # the standalone tokenizer (the bf16 cast above would otherwise downcast the
-    # codebook and normalization buffers).
+    # The embedded VQ-VAE must encode in the precision the policy was TRAINED on,
+    # which is bf16, not fp32. train.py upcasts it to fp32 before
+    # accelerator.prepare, but DeepSpeed's bf16 engine then calls
+    # self.module.bfloat16() (deepspeed/runtime/engine.py:1149, v0.15.4), which
+    # downcasts the codebook AND the tacf6_vqvae_min/max buffers. Every code the
+    # tactile expert saw in training was computed in bf16.
+    #
+    # Upcasting here -- this used to be unconditional -- changes the codes. On
+    # the OpenArm egg post-train data, via the real encode_tactile_f6_history,
+    # fp32 agrees with the training codes on 85.7% of slots: one right-hand slot
+    # (a constant zero pad) lands on a DIFFERENT code 100% of the time, and the
+    # left ring finger on 34% of windows. bf16 vs bf16 agrees on 100%.
+    #
+    # --vqvae_fp32 1 restores the old behaviour, i.e. matching the standalone
+    # fp32 tokenizer rather than the trained policy.
     if getattr(model, "tactile_vqvae", None) is not None:
-        model.tactile_vqvae.float().eval()
-        model.tacf6_vqvae_min = model.tacf6_vqvae_min.float()
-        model.tacf6_vqvae_max = model.tacf6_vqvae_max.float()
+        model.tactile_vqvae.eval()
+        if getattr(args, "vqvae_fp32", 0):
+            model.tactile_vqvae.float()
+            model.tacf6_vqvae_min = model.tacf6_vqvae_min.float()
+            model.tacf6_vqvae_max = model.tacf6_vqvae_max.float()
+        print(f"Embedded VQ-VAE encodes in {next(model.tactile_vqvae.parameters()).dtype}"
+              f" (training used torch.bfloat16)")
 
     n_flare_total = n_flare_tpf * n_flare_steps
     if n_flare_total > 0:
@@ -830,6 +846,10 @@ if __name__ == "__main__":
     parser.add_argument("--vqvae_ckpt", type=str, default="",
                         help="Path to TactileVQVAE checkpoint (latest.pt). "
                              "Required when --use_tactile_code 1.")
+    parser.add_argument("--vqvae_fp32", type=int, default=0,
+                        help="1: run the embedded VQ-VAE in fp32. Default 0 keeps "
+                             "bf16, the precision DeepSpeed trained it in; fp32 "
+                             "changes ~14%% of codes. See model_load.")
 
     args = parser.parse_args()
     if bool(args.use_tactile_code) and not args.vqvae_ckpt:
